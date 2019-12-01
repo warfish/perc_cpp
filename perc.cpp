@@ -3,7 +3,6 @@
 #include <exception>
 #include <stdexcept>
 #include <cassert>
-#include <iostream>
 #include <cmath>
 #include <cstdio>
 
@@ -199,8 +198,8 @@ void binary_perceptron<fixedpoint16>::train(const vector<fixedpoint16>& inputs1,
 template <typename T>
 static void test_perceptron_builtin()
 {
-    //const T bias = -0.1;
-    //const vector<T> weights = {0.21, -0.23};
+    const double bias = -0.1;
+    const vector<double> weights = {0.21, -0.23};
 
     const vector<T> inputs1 = {
         T(2.78), T(1.47), T(3.40), T(1.39), T(3.06), T(7.63), T(5.33), T(6.92), T(8.68), T(7.67)
@@ -230,6 +229,10 @@ static void test_perceptron_builtin()
     printf("Trained weights: {%.4f, %.4f}\n", (double)perc.weights[0], (double)perc.weights[1]);
     printf("Trained bias: %.4f\n", (double)perc.bias);
 
+    assert(fuzzy_compare((double)perc.bias, bias, 0.01));
+    assert(fuzzy_compare((double)perc.weights[0], weights[0], 0.01));
+    assert(fuzzy_compare((double)perc.weights[1], weights[1], 0.01));
+
     vector<bool> res = perc.run(inputs1, inputs2);
     for (size_t i = 0; i < outputs.size(); ++i) {
         assert(res[i] == outputs[i]);
@@ -240,10 +243,10 @@ int main()
 {
     test_fixedpoint16();
 
-    cout << endl << "binary_perceptron<double>" << endl;
+    printf("\nbinary_perceptron<double>\n");
     test_perceptron_builtin<double>();
 
-    cout << endl << "binary_perceptron<fixedpoint16>" << endl;
+    printf("\nbinary_perceptron<fixedpoint16>\n");
     test_perceptron_builtin<fixedpoint16>();
 
     return 0;
