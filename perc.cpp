@@ -28,6 +28,32 @@ struct fixedpoint16 {
     explicit operator double() const {
         return (double)data / (1 << kFractionBits);
     }
+
+    fixedpoint16 operator + (const fixedpoint16& other) const {
+        fixedpoint16 res;
+        res.data = (data + other.data);
+        return res;
+    }
+
+    fixedpoint16& operator += (const fixedpoint16& other) {
+        data += other.data;
+        return *this;
+    }
+
+    fixedpoint16 operator * (const fixedpoint16& other) const {
+        fixedpoint16 res;
+        res.data = (data * other.data) >> kFractionBits;
+        return res;
+    }
+
+    fixedpoint16& operator *= (const fixedpoint16& other) {
+        data = (data * other.data) >> kFractionBits;
+        return *this;
+    }
+
+    bool operator >= (int val) const {
+        return data >= val;
+    }
 };
 
 fixedpoint16 from_double(double v)
@@ -83,23 +109,32 @@ static void test_fixedpoint16()
 
 // 1-layer perceptron with 2 inputs
 template <typename T>
-struct binary_perceptron
+struct perceptron
 {
     T bias;
-    T weights[2];
+    vector<T> weights;
+
+    // Helper to calculate dot product for inputs and weights
+    T dot(const vector<T>& inputs) const;
 
     // Activaction function
-    bool predict(T i1, T i2) const;
+    bool predict(const vector<T>& inputs) const;
 
     // Train perceptron using gradient descent algorithm
-    void train(const vector<T>& inputs1,
-               const vector<T>& inputs2,
+    void train(const vector<vector<T>>& rows,
                const vector<bool>& outputs,
+               size_t ninputs,
                unsigned nepoch,
                T rate);
 
     // Run trained binary perceptron in given inputs
-    vector<bool> run(const vector<T>& inputs1, const vector<T>& inputs2) const;
+    vector<bool> run(const vector<vector<T>>& rows) const;
+
+    struct dataset
+    {
+        vector<vector<T>> inputs;
+        vector<bool> outputs;
+    };
 };
 
 //
@@ -107,45 +142,62 @@ struct binary_perceptron
 //
 
 template <typename T>
-bool binary_perceptron<T>::predict(T i1, T i2) const
+T perceptron<T>::dot(const vector<T>& inputs) const
 {
-    return (i1 * weights[0] + i2 * weights[1] + bias) >= 0;
+    T acc = bias;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        acc += inputs[i] * weights[i];
+    }
+
+    return acc;
 }
 
 template <typename T>
-void binary_perceptron<T>::train(const vector<T>& inputs1,
-                                 const vector<T>& inputs2,
-                                  const vector<bool>& outputs,
-                                unsigned nepoch,
-                                T rate)
+bool perceptron<T>::predict(const vector<T>& inputs) const
 {
-    assert(!inputs1.empty() && !inputs2.empty() && !outputs.empty());
-    assert(inputs1.size() == inputs2.size());
-    assert(inputs1.size() == outputs.size());
+    assert(inputs.size() == weights.size());
+    return dot(inputs) >= 0;
+}
 
-    weights[0] = 0;
-    weights[1] = 0;
+template <typename T>
+void perceptron<T>::train(const vector<vector<T>>& rows,
+                          const vector<bool>& outputs,
+                          size_t ninputs,
+                          unsigned nepoch,
+                          T rate)
+{
+    assert(!rows.empty());
+    assert(ninputs != 0);
+    assert(rows.size() == outputs.size());
+
+    size_t nrows = rows.size();
+    weights = vector<T>(ninputs, 0);
     bias = 0;
 
     while (nepoch-- > 0) {
-        for (size_t i = 0; i < outputs.size(); ++i) {
-            bool output = predict(inputs1[i], inputs2[i]);
+        for (size_t i = 0; i < nrows; ++i) {
+            const vector<T>& inputs = rows[i];
+            assert(inputs.size() == ninputs);
+
+            bool output = predict(inputs);
             T delta = rate * T((int)outputs[i] - (int)output);
             bias += delta;
-            weights[0] += delta * inputs1[i];
-            weights[1] += delta * inputs2[i];
+
+            for (size_t w = 0; w < weights.size(); ++w) {
+                weights[w] += delta * inputs[w];
+            }
         }
     }
 }
 
 template <typename T>
-vector<bool> binary_perceptron<T>::run(const vector<T>& inputs1, const vector<T>& inputs2) const
+vector<bool> perceptron<T>::run(const vector<vector<T>>& rows) const
 {
-    assert(inputs1.size() == inputs2.size());
+    assert (!rows.empty());
 
-    vector<bool> res(inputs1.size(), false);
-    for (size_t i = 0; i < inputs1.size(); ++i) {
-        res[i] = predict(inputs1[i], inputs2[i]);
+    vector<bool> res(rows.size(), false);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        res[i] = predict(rows[i]);
     }
 
     return res;
@@ -156,37 +208,35 @@ vector<bool> binary_perceptron<T>::run(const vector<T>& inputs1, const vector<T>
 //
 
 template <>
-bool binary_perceptron<fixedpoint16>::predict(fixedpoint16 i1, fixedpoint16 i2) const
+void perceptron<fixedpoint16>::train(const vector<vector<fixedpoint16>>& rows,
+                                     const vector<bool>& outputs,
+                                     size_t ninputs,
+                                     unsigned nepoch,
+                                     fixedpoint16 rate)
 {
-    return ((i1.data * weights[0].data) >> fixedpoint16::kFractionBits) +
-           ((i2.data * weights[1].data) >> fixedpoint16::kFractionBits) +
-           bias.data >= 0;
-}
+    assert(!rows.empty());
+    assert(ninputs != 0);
+    assert(rows.size() == outputs.size());
 
-template <>
-void binary_perceptron<fixedpoint16>::train(const vector<fixedpoint16>& inputs1,
-                                            const vector<fixedpoint16>& inputs2,
-                                            const vector<bool>& outputs,
-                                            unsigned nepoch,
-                                            fixedpoint16 rate)
-{
-    assert(!inputs1.empty() && !inputs2.empty() && !outputs.empty());
-    assert(inputs1.size() == inputs2.size());
-    assert(inputs1.size() == outputs.size());
-
-    weights[0].data = 0;
-    weights[1].data = 0;
+    size_t nrows = rows.size();
+    weights = vector<fixedpoint16>(ninputs);
     bias.data = 0;
 
     while (nepoch-- > 0) {
-        for (size_t i = 0; i < outputs.size(); ++i) {
-            bool output = predict(inputs1[i], inputs2[i]);
+        for (size_t i = 0; i < nrows; ++i) {
+            const vector<fixedpoint16>& inputs = rows[i];
+            assert(inputs.size() == ninputs);
+
+            bool output = predict(inputs);
+            int error = (int)outputs[i] - (int)output;
 
             // error is either 1, 0 or -1, so no need for right shift
-            int16_t delta = rate.data * ((int)outputs[i] - (int)output);
+            int16_t delta = rate.data * error;
             bias.data += delta;
-            weights[0].data += (delta * inputs1[i].data) >> fixedpoint16::kFractionBits;
-            weights[1].data += (delta * inputs2[i].data) >> fixedpoint16::kFractionBits;
+
+            for (size_t w = 0; w < weights.size(); ++w) {
+                weights[w].data += (delta * inputs[w].data) >> fixedpoint16::kFractionBits;
+            }
         }
     }
 }
@@ -201,24 +251,29 @@ static void test_perceptron_builtin()
     const double bias = -0.1;
     const vector<double> weights = {0.21, -0.23};
 
-    const vector<T> inputs1 = {
-        T(2.78), T(1.47), T(3.40), T(1.39), T(3.06), T(7.63), T(5.33), T(6.92), T(8.68), T(7.67)
+    const vector<vector<T>> rows = {
+        {T(2.78), T(2.55)},
+        {T(1.47), T(2.36)},
+        {T(3.40), T(4.40)},
+        {T(1.39), T(1.85)},
+        {T(3.06), T(3.01)},
+        {T(7.63), T(2.76)},
+        {T(5.33), T(2.09)},
+        {T(6.92), T(1.77)},
+        {T(8.68), T(-0.24)},
+        {T(7.67), T(3.51)},
     };
-    
-    const vector<T> inputs2 = {
-        T(2.55), T(2.36), T(4.40), T(1.85), T(3.01), T(2.76), T(2.09), T(1.77), T(-0.24), T(3.51)
-    };
-    
+
     const vector<bool> outputs = {
         false, false, false, false, false, true, true, true, true, true
     };
 
-    binary_perceptron<T> perc;
+    perceptron<T> perc;
 
     struct timespec start, end;
 
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &start); 
-    perc.train(inputs1, inputs2, outputs, 1000000, T(0.1));
+    perc.train(rows, outputs, 2, 1000000, T(0.1));
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end);
 
     unsigned long long start_ns = start.tv_sec * 1e9 + start.tv_nsec;
@@ -233,7 +288,7 @@ static void test_perceptron_builtin()
     assert(fuzzy_compare((double)perc.weights[0], weights[0], 0.01));
     assert(fuzzy_compare((double)perc.weights[1], weights[1], 0.01));
 
-    vector<bool> res = perc.run(inputs1, inputs2);
+    vector<bool> res = perc.run(rows);
     for (size_t i = 0; i < outputs.size(); ++i) {
         assert(res[i] == outputs[i]);
     }
