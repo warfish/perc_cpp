@@ -11,12 +11,12 @@ using namespace std;
 /////////////////////////////////////////////////////////////////////////////////
 
 //
-// 16 bit signed fixed point 6.10
+// 16 bit signed fixed point 8.8
 //
 
 struct fixedpoint16 {
     enum {
-        kFractionBits = 10
+        kFractionBits = 8
     };
 
     int16_t data;
@@ -180,9 +180,10 @@ void perceptron<T>::train(const vector<vector<T>>& rows,
             assert(inputs.size() == ninputs);
 
             bool output = predict(inputs);
-            T delta = rate * T((int)outputs[i] - (int)output);
-            bias += delta;
+            int error = (int)outputs[i] - (int)output;
+            T delta = rate * error;
 
+            bias += delta;
             for (size_t w = 0; w < weights.size(); ++w) {
                 weights[w] += delta * inputs[w];
             }
@@ -244,36 +245,31 @@ void perceptron<fixedpoint16>::train(const vector<vector<fixedpoint16>>& rows,
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <sys/time.h>
+#include "sonar.h"
 
 template <typename T>
 static void test_perceptron_builtin()
 {
-    const double bias = -0.1;
-    const vector<double> weights = {0.21, -0.23};
+    // Load sonar dataset
+    vector<vector<T>> rows(SONAR_DATASET_ROWS);
+    vector<bool> outputs(SONAR_DATASET_ROWS);
 
-    const vector<vector<T>> rows = {
-        {T(2.78), T(2.55)},
-        {T(1.47), T(2.36)},
-        {T(3.40), T(4.40)},
-        {T(1.39), T(1.85)},
-        {T(3.06), T(3.01)},
-        {T(7.63), T(2.76)},
-        {T(5.33), T(2.09)},
-        {T(6.92), T(1.77)},
-        {T(8.68), T(-0.24)},
-        {T(7.67), T(3.51)},
-    };
+    for (size_t i = 0; i < SONAR_DATASET_ROWS; ++i) {
+        vector<T> row(SONAR_DATASET_INPUTS);
+        for (size_t j = 0; j < SONAR_DATASET_INPUTS; ++j) {
+            row[j] = T(g_sonar_dataset[i][j]);
+        }
 
-    const vector<bool> outputs = {
-        false, false, false, false, false, true, true, true, true, true
-    };
+        rows[i] = row;
+        outputs[i] = g_sonar_dataset[i][SONAR_DATASET_INPUTS] != 0.0;
+    }
 
+    // Run weight training
     perceptron<T> perc;
-
     struct timespec start, end;
 
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &start); 
-    perc.train(rows, outputs, 2, 1000000, T(0.1));
+    perc.train(rows, outputs, SONAR_DATASET_INPUTS, 100000, T(0.1));
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end);
 
     unsigned long long start_ns = start.tv_sec * 1e9 + start.tv_nsec;
@@ -281,17 +277,23 @@ static void test_perceptron_builtin()
     unsigned long long duration_ns = end_ns - start_ns;
 
     printf("Train time taken (nanoseconds): %llu\n", duration_ns);
-    printf("Trained weights: {%.4f, %.4f}\n", (double)perc.weights[0], (double)perc.weights[1]);
+    printf("Trained weights: ");
+    for (auto w : perc.weights) {
+        printf("%.4f ", (double)w);
+    }
+    printf("\n");
     printf("Trained bias: %.4f\n", (double)perc.bias);
 
-    assert(fuzzy_compare((double)perc.bias, bias, 0.01));
-    assert(fuzzy_compare((double)perc.weights[0], weights[0], 0.01));
-    assert(fuzzy_compare((double)perc.weights[1], weights[1], 0.01));
-
+    // Calculate resulting accuracy
     vector<bool> res = perc.run(rows);
+    size_t correct = 0;
     for (size_t i = 0; i < outputs.size(); ++i) {
-        assert(res[i] == outputs[i]);
+        if (res[i] == outputs[i]) {
+            correct++;
+        }
     }
+
+    printf("Accuracy %zu/%d (%.2f%%)\n", correct, SONAR_DATASET_ROWS, (float)correct / SONAR_DATASET_ROWS * 100);
 }
 
 int main()
