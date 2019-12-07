@@ -183,10 +183,10 @@ void binary_perceptron<fixedpoint16>::train(const vector<fixedpoint16>& inputs1,
             bool output = predict(inputs1[i], inputs2[i]);
 
             // error is either 1, 0 or -1, so no need for right shift
-            int16_t diff = rate.data * ((int)outputs[i] - (int)output);
-            bias.data += diff;
-            weights[0].data += (diff * inputs1[i].data) >> fixedpoint16::kFractionBits;
-            weights[1].data += (diff * inputs2[i].data) >> fixedpoint16::kFractionBits;
+            int16_t delta = rate.data * ((int)outputs[i] - (int)output);
+            bias.data += delta;
+            weights[0].data += (delta * inputs1[i].data) >> fixedpoint16::kFractionBits;
+            weights[1].data += (delta * inputs2[i].data) >> fixedpoint16::kFractionBits;
         }
     }
 }
