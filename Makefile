@@ -1,5 +1,5 @@
 CXX = clang++
-CXXFLAGS = -O2 -ggdb3 -fno-omit-frame-pointer --std=c++14 -Wall
+CXXFLAGS = -O0 -ggdb3 -fno-omit-frame-pointer --std=c++14 -Wall -march=native
 
 all: perc
 

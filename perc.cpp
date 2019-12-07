@@ -56,6 +56,13 @@ struct fixedpoint16 {
     }
 };
 
+fixedpoint16 from_int(int v)
+{
+    fixedpoint16 res;
+    res.data = (int16_t)(v * (1 << fixedpoint16::kFractionBits));
+    return res;
+}
+
 fixedpoint16 from_double(double v)
 {
     fixedpoint16 res;
@@ -208,6 +215,130 @@ vector<bool> perceptron<T>::run(const vector<vector<T>>& rows) const
 // Specialized implementation for T = fixedpoint16
 //
 
+#include <immintrin.h>
+#include <string.h>
+
+#define AVX512_ALIGN            alignas(64)
+#define AVX512_TOTAL_INT16      (64 / sizeof(int16_t))
+#define AVX512_TOTAL_INT32      (64 / sizeof(int32_t))
+
+static bool g_vnni_enabled = false;
+
+static bool check_vnni_cpuid()
+{
+    uint32_t eax, ebx, ecx, edx;
+    asm volatile ("cpuid"
+                  : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+                  : "a" (0x7), "c" (0x0));
+
+    return (ecx & (1 << 11)) != 0;
+}
+
+// Check for AVX512 VNNI instruction set
+static inline bool is_vnni_supported()
+{
+    static bool is_supported = check_vnni_cpuid();
+    return is_supported;
+}
+
+// Calculate dot product using VNNI instructions
+static int32_t vnni_dot(const fixedpoint16* a,
+                        const fixedpoint16* b,
+                        size_t nelem)
+{
+
+    size_t nchunks = nelem / AVX512_TOTAL_INT16;
+
+    // Intermidiate summs
+    AVX512_ALIGN int32_t sums[AVX512_TOTAL_INT32] = {0};
+    int32_t acc = 0;
+
+    // For each full chunk use entire AVX register
+    for (size_t i = 0; i < nchunks; ++i) {
+        __m512i areg = _mm512_loadu_si512(a);
+        __m512i breg = _mm512_loadu_si512(b);
+        __m512i srcreg = _mm512_load_si512(sums);
+
+        __m512i dstreg = _mm512_dpwssd_epi32(srcreg, areg, breg);
+        _mm512_store_si512(sums, dstreg);
+
+        a += AVX512_TOTAL_INT16;
+        b += AVX512_TOTAL_INT16;
+        nelem -= AVX512_TOTAL_INT16;
+    }
+
+    // Handle remainder, if any
+    if (nelem > 0) {
+        AVX512_ALIGN int16_t tmp[AVX512_TOTAL_INT16] = {0};
+
+        memcpy(tmp, a, nelem * sizeof(*a));
+        __m512i areg = _mm512_load_si512(tmp);
+
+        memcpy(tmp, b, nelem * sizeof(*b));
+        __m512i breg = _mm512_load_si512(tmp);
+
+        __m512i srcreg = _mm512_load_si512(sums);
+
+        __m512i dstreg = _mm512_dpwssd_epi32(srcreg, areg, breg);
+        _mm512_store_si512(sums, dstreg);
+    }
+
+    // Combine intermidiate sums
+    // TODO: AVX instruction?
+    for (size_t i = 0; i < AVX512_TOTAL_INT32; ++i) {
+        acc += sums[i] >> fixedpoint16::kFractionBits;
+    }
+
+    return acc;
+}
+
+// Software implementation of a dot product
+static int32_t sw_dot(const fixedpoint16* a,
+                      const fixedpoint16* b,
+                      size_t nelem)
+{
+    int32_t acc = 0;
+    for (size_t i = 0; i < nelem; ++i) {
+        acc += ((int32_t)a[i].data * b[i].data) >> fixedpoint16::kFractionBits;
+    }
+
+    return acc;
+}
+
+static void test_dot()
+{
+    enum {
+        kElements = 32 + 32 + 2, // 2 full AVX512 regs + 2 extra elements
+    };
+
+    fixedpoint16 a[kElements];
+    fixedpoint16 b[kElements];
+
+    for (size_t i = 0; i < kElements; ++i) {
+        a[i] = from_int(i);
+        b[i] = from_int(i + 10);
+    }
+
+    int32_t vnni = vnni_dot(a, b, kElements);
+    int32_t sw = sw_dot(a, b, kElements);
+
+    printf("sw dot = %d, vnni dot = %d\n", sw, vnni);
+    assert(vnni == sw);
+}
+
+template <>
+bool perceptron<fixedpoint16>::predict(const vector<fixedpoint16>& inputs) const
+{
+    int32_t acc = bias.data;
+    if (g_vnni_enabled && is_vnni_supported()) {
+        acc += vnni_dot(inputs.data(), weights.data(), inputs.size());
+    } else {
+        acc += sw_dot(inputs.data(), weights.data(), inputs.size());
+    }
+
+    return acc >= 0;
+}
+
 template <>
 void perceptron<fixedpoint16>::train(const vector<vector<fixedpoint16>>& rows,
                                      const vector<bool>& outputs,
@@ -269,7 +400,7 @@ static void test_perceptron_builtin()
     struct timespec start, end;
 
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &start); 
-    perc.train(rows, outputs, SONAR_DATASET_INPUTS, 100000, T(0.1));
+    perc.train(rows, outputs, SONAR_DATASET_INPUTS, 10000, T(0.1));
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end);
 
     unsigned long long start_ns = start.tv_sec * 1e9 + start.tv_nsec;
@@ -300,10 +431,20 @@ int main()
 {
     test_fixedpoint16();
 
+    printf("CPU supports AVX512 VNNI: %s\n", is_vnni_supported() ? "yes" : "no");
+    if (is_vnni_supported()) {
+        test_dot();
+    }
+
     printf("\nbinary_perceptron<double>\n");
     test_perceptron_builtin<double>();
 
-    printf("\nbinary_perceptron<fixedpoint16>\n");
+    printf("\nbinary_perceptron<fixedpoint16> (no VNNI)\n");
+    g_vnni_enabled = false;
+    test_perceptron_builtin<fixedpoint16>();
+
+    printf("\nbinary_perceptron<fixedpoint16> (VNNI)\n");
+    g_vnni_enabled = true;
     test_perceptron_builtin<fixedpoint16>();
 
     return 0;
