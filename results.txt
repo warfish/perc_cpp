@@ -1,0 +1,16 @@
+$ make clean && make && ./perc
+rm -f perc
+clang++ -O2 -ggdb3 -fno-omit-frame-pointer --std=c++14 -Wall -march=native perc.cpp -o perc
+CPU supports AVX512 VNNI: yes
+
+Float point-based:
+Train time taken (nanoseconds): 2757320616
+Accuracy 167/208 (80.29%)
+
+Fixed point-based (no VNNI):
+Train time taken (nanoseconds): 2002662572
+Accuracy 167/208 (80.29%)
+
+Fixed point-based (VNNI):
+Train time taken (nanoseconds): 1677929872
+Accuracy 167/208 (80.29%)
