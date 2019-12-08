@@ -28,51 +28,7 @@ struct fixedpoint16 {
     explicit operator double() const {
         return (double)data / (1 << kFractionBits);
     }
-
-    fixedpoint16 operator + (const fixedpoint16& other) const {
-        fixedpoint16 res;
-        res.data = (data + other.data);
-        return res;
-    }
-
-    fixedpoint16& operator += (const fixedpoint16& other) {
-        data += other.data;
-        return *this;
-    }
-
-    fixedpoint16 operator * (const fixedpoint16& other) const {
-        fixedpoint16 res;
-        res.data = (data * other.data) >> kFractionBits;
-        return res;
-    }
-
-    fixedpoint16& operator *= (const fixedpoint16& other) {
-        data = (data * other.data) >> kFractionBits;
-        return *this;
-    }
-
-    bool operator >= (int val) const {
-        return data >= val;
-    }
 };
-
-fixedpoint16 from_int(int v)
-{
-    fixedpoint16 res;
-    res.data = (int16_t)(v * (1 << fixedpoint16::kFractionBits));
-    return res;
-}
-
-fixedpoint16 from_double(double v)
-{
-    fixedpoint16 res;
-    res.data = (int16_t)(v * (1 << fixedpoint16::kFractionBits));
-    return res;
-}
-
-double to_double(fixedpoint16 fp16) {
-    return (double)fp16.data / (1 << fixedpoint16::kFractionBits);
-}
 
 static bool fuzzy_compare(double a, double b, double tolerance = 0.005)
 {
@@ -89,7 +45,8 @@ static void assert_equal(double a, double b)
 
 static void assert_equal_fixedpoint(double val)
 {
-    assert_equal(to_double(from_double(val)), val);
+    // Convert to fixedpoint and back to double
+    assert_equal((double)(fixedpoint16)(val), val);
 }
 
 static void test_fixedpoint16()
@@ -293,8 +250,8 @@ static void test_dot()
     fixedpoint16 b[kElements];
 
     for (size_t i = 0; i < kElements; ++i) {
-        a[i] = from_int(i);
-        b[i] = from_int(i + 10);
+        a[i] = (fixedpoint16)i;
+        b[i] = (fixedpoint16)(i + 10);
     }
 
     int32_t vnni = vnni_dot(a, b, kElements);
