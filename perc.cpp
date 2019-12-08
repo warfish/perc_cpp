@@ -1,10 +1,11 @@
 #include <vector>
-#include <utility>
-#include <exception>
-#include <stdexcept>
-#include <cassert>
-#include <cmath>
-#include <cstdio>
+#include <assert.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include <stdio.h>
 
 using namespace std;
 
@@ -125,9 +126,6 @@ static void test_fixedpoint16()
         assert_equal_fixedpoint(i);
     }
 }
-
-#include <immintrin.h>
-#include <string.h>
 
 #define AVX512_ALIGN            alignas(64)
 #define AVX512_TOTAL_INT16      (64 / sizeof(int16_t))
@@ -307,7 +305,6 @@ void perceptron_int::train(const vector<vector<fixedpoint16>>& rows,
 
 /////////////////////////////////////////////////////////////////////////////////
 
-#include <sys/time.h>
 #include "sonar.h"
 
 template <typename perc_type>
