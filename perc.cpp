@@ -8,7 +8,7 @@
 
 using namespace std;
 
-/////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
 //
 // 16 bit signed fixed point 8.8
@@ -108,21 +108,13 @@ static void test_fixedpoint16()
     }
 }
 
-/////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
-//
-// Non-accelerated perceptrons
-//
-
-// 1-layer perceptron with 2 inputs
 template <typename T>
 struct perceptron
 {
     T bias;
     vector<T> weights;
-
-    // Helper to calculate dot product for inputs and weights
-    T dot(const vector<T>& inputs) const;
 
     // Activaction function
     bool predict(const vector<T>& inputs) const;
@@ -136,12 +128,6 @@ struct perceptron
 
     // Run trained binary perceptron in given inputs
     vector<bool> run(const vector<vector<T>>& rows) const;
-
-    struct dataset
-    {
-        vector<vector<T>> inputs;
-        vector<bool> outputs;
-    };
 };
 
 //
@@ -149,21 +135,14 @@ struct perceptron
 //
 
 template <typename T>
-T perceptron<T>::dot(const vector<T>& inputs) const
+bool perceptron<T>::predict(const vector<T>& inputs) const
 {
     T acc = bias;
     for (size_t i = 0; i < inputs.size(); ++i) {
         acc += inputs[i] * weights[i];
     }
 
-    return acc;
-}
-
-template <typename T>
-bool perceptron<T>::predict(const vector<T>& inputs) const
-{
-    assert(inputs.size() == weights.size());
-    return dot(inputs) >= 0;
+    return acc >= 0;
 }
 
 template <typename T>
@@ -173,10 +152,6 @@ void perceptron<T>::train(const vector<vector<T>>& rows,
                           unsigned nepoch,
                           T rate)
 {
-    assert(!rows.empty());
-    assert(ninputs != 0);
-    assert(rows.size() == outputs.size());
-
     size_t nrows = rows.size();
     weights = vector<T>(ninputs, 0);
     bias = 0;
@@ -184,9 +159,8 @@ void perceptron<T>::train(const vector<vector<T>>& rows,
     while (nepoch-- > 0) {
         for (size_t i = 0; i < nrows; ++i) {
             const vector<T>& inputs = rows[i];
-            assert(inputs.size() == ninputs);
-
             bool output = predict(inputs);
+
             int error = (int)outputs[i] - (int)output;
             T delta = rate * error;
 
@@ -210,6 +184,8 @@ vector<bool> perceptron<T>::run(const vector<vector<T>>& rows) const
 
     return res;
 }
+
+////////////////////////////////////////////////////////////////////////////////
 
 //
 // Specialized implementation for T = fixedpoint16
@@ -251,16 +227,16 @@ static int32_t vnni_dot(const fixedpoint16* a,
 
     // Intermidiate summs
     AVX512_ALIGN int32_t sums[AVX512_TOTAL_INT32] = {0};
-    int32_t acc = 0;
 
     // For each full chunk use entire AVX register
     for (size_t i = 0; i < nchunks; ++i) {
-        __m512i areg = _mm512_loadu_si512(a);
-        __m512i breg = _mm512_loadu_si512(b);
-        __m512i srcreg = _mm512_load_si512(sums);
-
-        __m512i dstreg = _mm512_dpwssd_epi32(srcreg, areg, breg);
-        _mm512_store_si512(sums, dstreg);
+        asm volatile (
+            "vmovdqu64 %0, %%zmm0 \r\n"
+            "vmovdqu64 %1, %%zmm1 \r\n"
+            "vmovdqa64 %2, %%zmm2 \r\n"
+            "vpdpwssd %%zmm0, %%zmm1, %%zmm2 \r\n"
+            "vmovdqa32 %%zmm2, %2 \r\n"
+            : : "m"(*a), "m"(*b), "m"(sums) : "zmm0", "zmm1", "zmm2");
 
         a += AVX512_TOTAL_INT16;
         b += AVX512_TOTAL_INT16;
@@ -269,22 +245,24 @@ static int32_t vnni_dot(const fixedpoint16* a,
 
     // Handle remainder, if any
     if (nelem > 0) {
-        AVX512_ALIGN int16_t tmp[AVX512_TOTAL_INT16] = {0};
+        AVX512_ALIGN int16_t tmpa[AVX512_TOTAL_INT16] = {0};
+        AVX512_ALIGN int16_t tmpb[AVX512_TOTAL_INT16] = {0};
 
-        memcpy(tmp, a, nelem * sizeof(*a));
-        __m512i areg = _mm512_load_si512(tmp);
+        memcpy(tmpa, a, nelem * sizeof(*a));
+        memcpy(tmpb, b, nelem * sizeof(*b));
 
-        memcpy(tmp, b, nelem * sizeof(*b));
-        __m512i breg = _mm512_load_si512(tmp);
-
-        __m512i srcreg = _mm512_load_si512(sums);
-
-        __m512i dstreg = _mm512_dpwssd_epi32(srcreg, areg, breg);
-        _mm512_store_si512(sums, dstreg);
+        asm volatile(
+            "vmovdqa64 %0, %%zmm0 \r\n"
+            "vmovdqa64 %1, %%zmm1 \r\n"
+            "vmovdqa64 %2, %%zmm2 \r\n"
+            "vpdpwssd %%zmm0, %%zmm1, %%zmm2 \r\n"
+            "vmovdqa32 %%zmm2, %2 \r\n"
+            : : "m"(tmpa), "m"(tmpb), "m"(sums) : "zmm0", "zmm1", "zmm2");
     }
 
-    // Combine intermidiate sums
-    // TODO: AVX instruction?
+    // Reduce AVX register to a sum
+    // There exists an _mm512_reduce_add_epi32 intrinsic but it does not appear to be faster
+    int32_t acc = 0;
     for (size_t i = 0; i < AVX512_TOTAL_INT32; ++i) {
         acc += sums[i] >> fixedpoint16::kFractionBits;
     }
@@ -322,20 +300,21 @@ static void test_dot()
     int32_t vnni = vnni_dot(a, b, kElements);
     int32_t sw = sw_dot(a, b, kElements);
 
-    printf("sw dot = %d, vnni dot = %d\n", sw, vnni);
-    assert(vnni == sw);
+    if (vnni != sw) {
+        printf("sw dot = %d, vnni dot = %d\n", sw, vnni);
+        assert(vnni == sw);
+    }
 }
+
+// We remeber dot function choise on each training start
+typedef int32_t(*dot_fptr_t)(const fixedpoint16* a, const fixedpoint16* b, size_t nelem);
+static dot_fptr_t g_dot_func;
 
 template <>
 bool perceptron<fixedpoint16>::predict(const vector<fixedpoint16>& inputs) const
 {
     int32_t acc = bias.data;
-    if (g_vnni_enabled && is_vnni_supported()) {
-        acc += vnni_dot(inputs.data(), weights.data(), inputs.size());
-    } else {
-        acc += sw_dot(inputs.data(), weights.data(), inputs.size());
-    }
-
+    acc += g_dot_func(inputs.data(), weights.data(), inputs.size());
     return acc >= 0;
 }
 
@@ -346,20 +325,21 @@ void perceptron<fixedpoint16>::train(const vector<vector<fixedpoint16>>& rows,
                                      unsigned nepoch,
                                      fixedpoint16 rate)
 {
-    assert(!rows.empty());
-    assert(ninputs != 0);
-    assert(rows.size() == outputs.size());
-
     size_t nrows = rows.size();
     weights = vector<fixedpoint16>(ninputs);
     bias.data = 0;
 
+    if (g_vnni_enabled && is_vnni_supported()) {
+        g_dot_func = vnni_dot;
+    } else {
+        g_dot_func = sw_dot;
+    }
+
     while (nepoch-- > 0) {
         for (size_t i = 0; i < nrows; ++i) {
             const vector<fixedpoint16>& inputs = rows[i];
-            assert(inputs.size() == ninputs);
-
             bool output = predict(inputs);
+
             int error = (int)outputs[i] - (int)output;
 
             // error is either 1, 0 or -1, so no need for right shift
