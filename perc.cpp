@@ -11,9 +11,70 @@ using namespace std;
 ////////////////////////////////////////////////////////////////////////////////
 
 //
-// 16 bit signed fixed point 8.8
+// Simple perceptron based on floating point calculations
 //
 
+struct perceptron_flt
+{
+    typedef double data_type;
+
+    double bias;
+    vector<double> weights;
+
+    // Activaction function
+    bool predict(const vector<double>& inputs) const;
+
+    // Train perceptron using gradient descent algorithm
+    void train(const vector<vector<double>>& rows,
+               const vector<bool>& outputs,
+               size_t ninputs,
+               unsigned nepoch,
+               float rate);
+};
+
+bool perceptron_flt::predict(const vector<double>& inputs) const
+{
+    double acc = bias;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        acc += inputs[i] * weights[i];
+    }
+
+    return acc >= 0;
+}
+
+void perceptron_flt::train(const vector<vector<double>>& rows,
+                           const vector<bool>& outputs,
+                           size_t ninputs,
+                           unsigned nepoch,
+                           float rate)
+{
+    size_t nrows = rows.size();
+    weights = vector<double>(ninputs, 0);
+    bias = 0;
+
+    while (nepoch-- > 0) {
+        for (size_t i = 0; i < nrows; ++i) {
+            const vector<double>& inputs = rows[i];
+            bool output = predict(inputs);
+
+            int error = (int)outputs[i] - (int)output;
+            double delta = rate * error;
+
+            bias += delta;
+            for (size_t w = 0; w < weights.size(); ++w) {
+                weights[w] += delta * inputs[w];
+            }
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+//
+// Simple perceptron based on integer calculations
+//
+
+// 16 bit signed fixed point 8.8
 struct fixedpoint16 {
     enum {
         kFractionBits = 8
@@ -65,97 +126,12 @@ static void test_fixedpoint16()
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-template <typename T>
-struct perceptron
-{
-    T bias;
-    vector<T> weights;
-
-    // Activaction function
-    bool predict(const vector<T>& inputs) const;
-
-    // Train perceptron using gradient descent algorithm
-    void train(const vector<vector<T>>& rows,
-               const vector<bool>& outputs,
-               size_t ninputs,
-               unsigned nepoch,
-               T rate);
-
-    // Run trained binary perceptron in given inputs
-    vector<bool> run(const vector<vector<T>>& rows) const;
-};
-
-//
-// Generic implementation (for T = double)
-//
-
-template <typename T>
-bool perceptron<T>::predict(const vector<T>& inputs) const
-{
-    T acc = bias;
-    for (size_t i = 0; i < inputs.size(); ++i) {
-        acc += inputs[i] * weights[i];
-    }
-
-    return acc >= 0;
-}
-
-template <typename T>
-void perceptron<T>::train(const vector<vector<T>>& rows,
-                          const vector<bool>& outputs,
-                          size_t ninputs,
-                          unsigned nepoch,
-                          T rate)
-{
-    size_t nrows = rows.size();
-    weights = vector<T>(ninputs, 0);
-    bias = 0;
-
-    while (nepoch-- > 0) {
-        for (size_t i = 0; i < nrows; ++i) {
-            const vector<T>& inputs = rows[i];
-            bool output = predict(inputs);
-
-            int error = (int)outputs[i] - (int)output;
-            T delta = rate * error;
-
-            bias += delta;
-            for (size_t w = 0; w < weights.size(); ++w) {
-                weights[w] += delta * inputs[w];
-            }
-        }
-    }
-}
-
-template <typename T>
-vector<bool> perceptron<T>::run(const vector<vector<T>>& rows) const
-{
-    assert (!rows.empty());
-
-    vector<bool> res(rows.size(), false);
-    for (size_t i = 0; i < rows.size(); ++i) {
-        res[i] = predict(rows[i]);
-    }
-
-    return res;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-//
-// Specialized implementation for T = fixedpoint16
-//
-
 #include <immintrin.h>
 #include <string.h>
 
 #define AVX512_ALIGN            alignas(64)
 #define AVX512_TOTAL_INT16      (64 / sizeof(int16_t))
 #define AVX512_TOTAL_INT32      (64 / sizeof(int32_t))
-
-static bool g_vnni_enabled = false;
 
 static bool check_vnni_cpuid()
 {
@@ -263,34 +239,53 @@ static void test_dot()
     }
 }
 
-// We remeber dot function choise on each training start
-typedef int32_t(*dot_fptr_t)(const fixedpoint16* a, const fixedpoint16* b, size_t nelem);
-static dot_fptr_t g_dot_func;
-
-template <>
-bool perceptron<fixedpoint16>::predict(const vector<fixedpoint16>& inputs) const
+struct perceptron_int
 {
-    int32_t acc = bias.data;
-    acc += g_dot_func(inputs.data(), weights.data(), inputs.size());
+    typedef fixedpoint16 data_type;
+
+    fixedpoint16 bias;
+    vector<fixedpoint16> weights;
+
+    bool vnni_supported;
+    bool vnni_enabled;
+    int32_t(*dot_func)(const fixedpoint16* a, const fixedpoint16* b, size_t nelem);
+
+    explicit perceptron_int(bool enable_vnni) :
+        vnni_supported(is_vnni_supported()),
+        vnni_enabled(vnni_supported ? enable_vnni : false),
+        dot_func(vnni_enabled ? vnni_dot : sw_dot)
+    {
+    }
+
+    // Activaction function
+    bool predict(const vector<fixedpoint16>& inputs) const;
+
+    // Train perceptron using gradient descent algorithm
+    void train(const vector<vector<fixedpoint16>>& rows,
+               const vector<bool>& outputs,
+               size_t ninputs,
+               unsigned nepoch,
+               float rate);
+};
+
+bool perceptron_int::predict(const vector<fixedpoint16>& inputs) const
+{
+    int32_t acc = this->bias.data;
+    acc += this->dot_func(inputs.data(), weights.data(), inputs.size());
     return acc >= 0;
 }
 
-template <>
-void perceptron<fixedpoint16>::train(const vector<vector<fixedpoint16>>& rows,
-                                     const vector<bool>& outputs,
-                                     size_t ninputs,
-                                     unsigned nepoch,
-                                     fixedpoint16 rate)
+void perceptron_int::train(const vector<vector<fixedpoint16>>& rows,
+                           const vector<bool>& outputs,
+                           size_t ninputs,
+                           unsigned nepoch,
+                           float rate)
 {
+    fixedpoint16 fp_rate(rate);
     size_t nrows = rows.size();
-    weights = vector<fixedpoint16>(ninputs);
-    bias.data = 0;
 
-    if (g_vnni_enabled && is_vnni_supported()) {
-        g_dot_func = vnni_dot;
-    } else {
-        g_dot_func = sw_dot;
-    }
+    weights = vector<fixedpoint16>(ninputs);
+    bias = fixedpoint16(0);
 
     while (nepoch-- > 0) {
         for (size_t i = 0; i < nrows; ++i) {
@@ -300,7 +295,7 @@ void perceptron<fixedpoint16>::train(const vector<vector<fixedpoint16>>& rows,
             int error = (int)outputs[i] - (int)output;
 
             // error is either 1, 0 or -1, so no need for right shift
-            int16_t delta = rate.data * error;
+            int16_t delta = fp_rate.data * error;
             bias.data += delta;
 
             for (size_t w = 0; w < weights.size(); ++w) {
@@ -315,17 +310,19 @@ void perceptron<fixedpoint16>::train(const vector<vector<fixedpoint16>>& rows,
 #include <sys/time.h>
 #include "sonar.h"
 
-template <typename T>
-static void test_perceptron_builtin()
+template <typename perc_type>
+static void test_perceptron_builtin(perc_type& perc)
 {
+    typedef typename perc_type::data_type data_type;
+
     // Load sonar dataset
-    vector<vector<T>> rows(SONAR_DATASET_ROWS);
+    vector<vector<data_type>> rows(SONAR_DATASET_ROWS);
     vector<bool> outputs(SONAR_DATASET_ROWS);
 
     for (size_t i = 0; i < SONAR_DATASET_ROWS; ++i) {
-        vector<T> row(SONAR_DATASET_INPUTS);
+        vector<data_type> row(SONAR_DATASET_INPUTS);
         for (size_t j = 0; j < SONAR_DATASET_INPUTS; ++j) {
-            row[j] = T(g_sonar_dataset[i][j]);
+            row[j] = (data_type)g_sonar_dataset[i][j];
         }
 
         rows[i] = row;
@@ -333,11 +330,10 @@ static void test_perceptron_builtin()
     }
 
     // Run weight training
-    perceptron<T> perc;
     struct timespec start, end;
 
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &start); 
-    perc.train(rows, outputs, SONAR_DATASET_INPUTS, 10000, T(0.1));
+    perc.train(rows, outputs, SONAR_DATASET_INPUTS, 100000, 0.1);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end);
 
     unsigned long long start_ns = start.tv_sec * 1e9 + start.tv_nsec;
@@ -345,15 +341,22 @@ static void test_perceptron_builtin()
     unsigned long long duration_ns = end_ns - start_ns;
 
     printf("Train time taken (nanoseconds): %llu\n", duration_ns);
+
+    /*
     printf("Trained weights: ");
     for (auto w : perc.weights) {
         printf("%.4f ", (double)w);
     }
     printf("\n");
     printf("Trained bias: %.4f\n", (double)perc.bias);
+    */
 
     // Calculate resulting accuracy
-    vector<bool> res = perc.run(rows);
+    vector<bool> res(rows.size(), false);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        res[i] = perc.predict(rows[i]);
+    }
+
     size_t correct = 0;
     for (size_t i = 0; i < outputs.size(); ++i) {
         if (res[i] == outputs[i]) {
@@ -373,16 +376,26 @@ int main()
         test_dot();
     }
 
-    printf("\nbinary_perceptron<double>\n");
-    test_perceptron_builtin<double>();
+    {
+        printf("\nFloat point-based:\n");
 
-    printf("\nbinary_perceptron<fixedpoint16> (no VNNI)\n");
-    g_vnni_enabled = false;
-    test_perceptron_builtin<fixedpoint16>();
+        perceptron_flt perc;
+        test_perceptron_builtin(perc);
+    }
 
-    printf("\nbinary_perceptron<fixedpoint16> (VNNI)\n");
-    g_vnni_enabled = true;
-    test_perceptron_builtin<fixedpoint16>();
+    {
+        printf("\nFixed point-based (no VNNI):\n");
+
+        perceptron_int perc(false);
+        test_perceptron_builtin(perc);
+    }
+
+    {
+        printf("\nFixed point-based (VNNI):\n");
+
+        perceptron_int perc(true);
+        test_perceptron_builtin(perc);
+    }
 
     return 0;
 }
